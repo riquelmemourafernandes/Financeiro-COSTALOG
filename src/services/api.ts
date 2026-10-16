@@ -498,6 +498,7 @@ export const FinancialService = {
     };
 
     const foundCompanies = new Set<string>();
+    const unmappedCategoryCounts = new Map<string, number>();
 
     const processItems = (items: any[], isRevenue: boolean) => {
       if (items.length === 0) {
@@ -529,7 +530,20 @@ export const FinancialService = {
 
         const mapping = findItemCategoryMapping(item);
 
-        if (!mapping || mapping.category === "Á DEFINIR" || mapping.category === "SEM CLASSIFICAÇÃO") return;
+        if (!mapping) {
+          // Log only possible classification labels (not partner names or amounts) to help
+          // align the DSS schema with the DRE mapping without exposing financial details.
+          const candidates = [
+            item.categoria, item.nomeCategoria, item.nome_categoria, item.classificacao,
+            item.classificação, item.planoConta, item.plano_conta, item.nomeConta,
+            item.nome_conta, item.tipoFatura, item.tipo_fatura, item.centroCusto,
+            item.centro_custo, item.conta,
+          ];
+          const label = candidates.find(value => typeof value === 'string' && value.trim())?.toString().trim() || '(sem campo de classificação reconhecido)';
+          unmappedCategoryCounts.set(label, (unmappedCategoryCounts.get(label) || 0) + 1);
+          return;
+        }
+        if (mapping.category === "Á DEFINIR" || mapping.category === "SEM CLASSIFICAÇÃO") return;
 
         const { category, subcategory } = mapping;
         const value = getValue(item);
@@ -563,6 +577,12 @@ export const FinancialService = {
 
     if (foundCompanies.size > 0) {
       console.log(`FinancialService: Empresas encontradas em ${period.month}/${period.year}:`, Array.from(foundCompanies));
+    }
+    if (unmappedCategoryCounts.size > 0) {
+      console.warn(
+        `FinancialService: ${Array.from(unmappedCategoryCounts.values()).reduce((sum, count) => sum + count, 0)} lançamentos sem categoria mapeada em ${period.month}/${period.year}. Principais campos:`,
+        Array.from(unmappedCategoryCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10)
+      );
     }
 
     // Calculate totals
