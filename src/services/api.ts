@@ -17,8 +17,33 @@ const normalizeAccountName = (value: string) => value
   .trim()
   .toUpperCase();
 
+const CUSTOM_CATEGORY_STORAGE_KEY = 'costalog_custom_category_mapping';
+
+export type CategoryMapping = { subcategory: string; category: string };
+
+export const getCustomCategoryMappings = (): Record<string, CategoryMapping> => {
+  try {
+    const stored = localStorage.getItem(CUSTOM_CATEGORY_STORAGE_KEY);
+    return stored ? JSON.parse(stored) : {};
+  } catch {
+    return {};
+  }
+};
+
+export const saveCustomCategoryMapping = (label: string, mapping: CategoryMapping) => {
+  const current = getCustomCategoryMappings();
+  current[label] = mapping;
+  localStorage.setItem(CUSTOM_CATEGORY_STORAGE_KEY, JSON.stringify(current));
+  // Clear computed caches so the new classification takes effect immediately.
+  Object.keys(sessionCache).forEach(key => delete sessionCache[key]);
+  Object.keys(historicalCache).forEach(key => delete historicalCache[key]);
+  try { localStorage.removeItem('financial_historical_cache'); } catch { /* storage may be unavailable */ }
+};
+
 const findCategoryMapping = (accountName: string) => {
   const normalized = normalizeAccountName(accountName);
+  const custom = Object.entries(getCustomCategoryMappings()).find(([label]) => normalizeAccountName(label) === normalized)?.[1];
+  if (custom) return custom;
   return Object.entries(CATEGORY_MAPPING).find(([label]) => normalizeAccountName(label) === normalized)?.[1];
 };
 
@@ -603,7 +628,10 @@ export const FinancialService = {
       totalRevenue,
       totalExpense,
       netResult: totalRevenue - totalExpense,
-      companyBreakdown
+      companyBreakdown,
+      unmappedCategories: Array.from(unmappedCategoryCounts.entries())
+        .map(([label, count]) => ({ label, count }))
+        .sort((a, b) => b.count - a.count)
     };
 
     // Store in session cache
