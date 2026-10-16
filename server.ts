@@ -1,4 +1,5 @@
 import express from "express";
+import { timingSafeEqual } from "node:crypto";
 import { createServer as createViteServer } from "vite";
 import fetch from "node-fetch";
 
@@ -8,13 +9,38 @@ const DSS_ENDPOINTS: Record<string, string> = {
 };
 const ALLOWED_REFERENCES = new Set(["E", "V", "P"]);
 
+function hasValidFinancePassword(req: express.Request): boolean {
+  const expected = process.env.FINANCE_ACCESS_PASSWORD;
+  const supplied = req.header("x-finance-password") || "";
+  if (!expected || !supplied) return false;
+  const expectedBuffer = Buffer.from(expected);
+  const suppliedBuffer = Buffer.from(supplied);
+  return expectedBuffer.length === suppliedBuffer.length && timingSafeEqual(expectedBuffer, suppliedBuffer);
+}
+
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
+  app.disable("x-powered-by");
   app.use(express.json({ limit: "32kb" }));
 
-  // DSS credentials are server-side only. Never prefix them with VITE_.
+  // Fail closed: financial endpoints never work until an access password is configured.
+  app.post("/api/financeiro/auth", (req, res) => {
+    if (!process.env.FINANCE_ACCESS_PASSWORD) {
+      return res.status(503).json({ error: "A senha de acesso financeiro não está configurada no servidor." });
+    }
+    if (!hasValidFinancePassword(req)) {
+      return res.status(401).json({ error: "Acesso não autorizado." });
+    }
+    return res.json({ authenticated: true });
+  });
+
   app.post("/api/financeiro/dss", async (req, res) => {
+    if (!hasValidFinancePassword(req)) {
+      return res.status(process.env.FINANCE_ACCESS_PASSWORD ? 401 : 503).json({
+        error: process.env.FINANCE_ACCESS_PASSWORD ? "Acesso não autorizado." : "A senha de acesso financeiro não está configurada no servidor."
+      });
+    }
     try {
       const { endpoint, params } = req.body ?? {};
       const route = typeof endpoint === "string" ? DSS_ENDPOINTS[endpoint] : undefined;
@@ -26,7 +52,8 @@ async function startServer() {
       }
 
       const base = new URL(DSS_BASE_URL);
-      if (base.protocol !== "https:" || !base.hostname.endsWith("dssinformatica.com.br")) {
+      const allowedHost = base.hostname === "dssinformatica.com.br" || base.hostname.endsWith(".dssinformatica.com.br");
+      if (base.protocol !== "https:" || !allowedHost || base.username || base.password) {
         return res.status(500).json({ error: "DSS_BASE_URL deve ser HTTPS e apontar para um domínio DSS autorizado." });
       }
 
@@ -41,7 +68,9 @@ async function startServer() {
         return res.status(400).json({ error: "tipo_ref deve ser E, V ou P." });
       }
 
-      const target = new URL(route, base.toString().replace(/\/?$/, "/"));
+      // Preserve a configured path such as /wsdss/ when resolving the allowed endpoint.
+      if (!base.pathname.endsWith("/")) base.pathname += "/";
+      const target = new URL(route, base);
       target.searchParams.set("nome_banco_dados", DSS_DATABASE);
       target.searchParams.set("banco", DSS_DATABASE);
       target.searchParams.set("usuario", DSS_USER);
@@ -55,13 +84,15 @@ async function startServer() {
         headers: { Accept: "application/json" },
         timeout: 30000,
       } as any);
-      const text = await upstream.text();
+      const body = await upstream.text();
       let data: any;
-      try { data = JSON.parse(text); }
+      try { data = JSON.parse(body); }
       catch { return res.status(502).json({ error: "O DSS retornou uma resposta que não é JSON válido." }); }
 
       if (!upstream.ok) return res.status(502).json({ error: "Erro na consulta ao DSS.", status: upstream.status });
-      if (data?.mensagemErro?.trim()) return res.status(502).json({ error: "O DSS informou um erro na consulta.", details: data.mensagemErro });
+      if (typeof data?.mensagemErro === "string" && data.mensagemErro.trim()) {
+        return res.status(502).json({ error: "O DSS informou um erro na consulta.", details: data.mensagemErro });
+      }
       return res.json(data);
     } catch (error: any) {
       console.error("[DSS] Falha na consulta:", error?.message || "erro desconhecido");
@@ -69,7 +100,6 @@ async function startServer() {
     }
   });
 
-  // Legacy proxy removed: clients may not choose arbitrary upstream URLs.
   app.post("/api/proxy", (_req, res) => res.status(410).json({ error: "Proxy antigo desativado. Use /api/financeiro/dss." }));
   app.get("/api/proxy", (_req, res) => res.status(410).json({ error: "Proxy antigo desativado. Use /api/financeiro/dss." }));
   app.post("/api/proxy/clear", (_req, res) => res.json({ status: "ok", message: "Não há cache de proxy para limpar." }));
