@@ -35,6 +35,10 @@ async function startServer() {
   app.disable("x-powered-by");
   app.use(express.json({ limit: "32kb" }));
 
+  app.get("/api/health", (_req, res) => {
+    return res.json({ status: "ok", service: "financeiro-costalog" });
+  });
+
   // Fail closed: financial endpoints never work until an access password is configured.
   app.get("/api/financeiro/auth", (req, res) => {
     if (!process.env.FINANCE_ACCESS_PASSWORD) {
