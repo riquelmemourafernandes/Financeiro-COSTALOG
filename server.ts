@@ -8,6 +8,9 @@ const DSS_ENDPOINTS: Record<string, string> = {
   listarContasPagar: "listarContasPagar",
 };
 const ALLOWED_REFERENCES = new Set(["E", "V", "P"]);
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 10;
 
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
 
@@ -52,6 +55,7 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
   app.disable("x-powered-by");
+  app.set("trust proxy", 1);
   app.use(express.json({ limit: "32kb" }));
 
   app.get("/api/health", (_req, res) => {
@@ -79,11 +83,23 @@ async function startServer() {
     if (!process.env.FINANCE_ACCESS_PASSWORD) {
       return res.status(503).json({ error: "A senha de acesso financeiro não está configurada no servidor." });
     }
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    const now = Date.now();
+    const attempt = loginAttempts.get(ip);
+    if (attempt && attempt.resetAt > now && attempt.count >= LOGIN_MAX_ATTEMPTS) {
+      return res.status(429).json({ error: "Muitas tentativas. Aguarde 15 minutos e tente novamente." });
+    }
+
     const expected = process.env.FINANCE_ACCESS_PASSWORD;
     const supplied = req.header("x-finance-password") || "";
     if (!expected || !supplied || !safeEqual(supplied, expected)) {
+      const current = attempt && attempt.resetAt > now ? attempt : { count: 0, resetAt: now + LOGIN_WINDOW_MS };
+      current.count += 1;
+      loginAttempts.set(ip, current);
       return res.status(401).json({ error: "Acesso não autorizado." });
     }
+
+    loginAttempts.delete(ip);
     const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
     res.setHeader("Set-Cookie", `finance_access=${accessToken(expected)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${secure}`);
     return res.json({ authenticated: true });
