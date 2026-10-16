@@ -15,16 +15,14 @@ import { SpreadsheetView } from './components/views/Spreadsheet';
 import { COMPANIES } from './constants/companies';
 
 export default function App() {
-  const [accessPassword, setAccessPassword] = useState(() => sessionStorage.getItem('finance_access_password') || '');
+  const [accessPassword, setAccessPassword] = useState('');
   const [authenticated, setAuthenticated] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
 
   React.useEffect(() => {
-    const saved = sessionStorage.getItem('finance_access_password');
-    if (!saved) return;
-    fetch('/api/financeiro/auth', { method: 'POST', headers: { 'x-finance-password': saved } })
-      .then(response => { if (response.ok) setAuthenticated(true); else sessionStorage.removeItem('finance_access_password'); })
+    fetch('/api/financeiro/auth')
+      .then(response => { if (response.ok) setAuthenticated(true); })
       .catch(() => setLoginError('Não foi possível validar o acesso. Verifique a conexão.'));
   }, []);
 
@@ -41,7 +39,7 @@ export default function App() {
         if (response.status === 503) throw new Error('A senha de acesso ainda não foi configurada no servidor.');
         throw new Error('Senha incorreta ou acesso não autorizado.');
       }
-      sessionStorage.setItem('finance_access_password', accessPassword);
+      setAccessPassword('');
       setAuthenticated(true);
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : 'Falha ao entrar.');
