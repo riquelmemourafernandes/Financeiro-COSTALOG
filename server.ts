@@ -36,6 +36,16 @@ async function startServer() {
   app.use(express.json({ limit: "32kb" }));
 
   // Fail closed: financial endpoints never work until an access password is configured.
+  app.get("/api/financeiro/auth", (req, res) => {
+    if (!process.env.FINANCE_ACCESS_PASSWORD) {
+      return res.status(503).json({ error: "A senha de acesso financeiro não está configurada no servidor." });
+    }
+    if (!hasValidFinancePassword(req) || !(req.headers.cookie || "").includes("finance_access=")) {
+      return res.status(401).json({ error: "Acesso não autorizado." });
+    }
+    return res.json({ authenticated: true });
+  });
+
   app.post("/api/financeiro/auth", (req, res) => {
     if (!process.env.FINANCE_ACCESS_PASSWORD) {
       return res.status(503).json({ error: "A senha de acesso financeiro não está configurada no servidor." });
