@@ -9,6 +9,19 @@
 // DSS credentials stay on the backend. VITE_* variables are public in browser bundles.
 import { CATEGORY_MAPPING } from '../constants/categories';
 
+// Match account labels consistently despite capitalization, accents, or repeated spaces.
+const normalizeAccountName = (value: string) => value
+  .normalize('NFD')
+  .replace(/[\\u0300-\\u036f]/g, '')
+  .replace(/\\s+/g, ' ')
+  .trim()
+  .toUpperCase();
+
+const findCategoryMapping = (accountName: string) => {
+  const normalized = normalizeAccountName(accountName);
+  return Object.entries(CATEGORY_MAPPING).find(([label]) => normalizeAccountName(label) === normalized)?.[1];
+};
+
 // Global request queue with priority support
 type QueueItem = {
   task: () => Promise<any>;
@@ -267,7 +280,7 @@ export const FinancialService = {
       // Category check
       const rawAccount = (item.conta || item.nome_conta || item.conta_corrente || item.banco || '').toString().trim();
       const accountName = rawAccount.replace(/^[\d.\s-]+/, '').trim();
-      const mapping = CATEGORY_MAPPING[accountName];
+      const mapping = findCategoryMapping(accountName);
       const isExcludedCategory = mapping && (mapping.category === "Á DEFINIR" || mapping.category === "SEM CLASSIFICAÇÃO");
 
       return !isTransfer && hasPartner && !isIdeallog && hasDate && !isExcludedCategory;
@@ -492,7 +505,7 @@ export const FinancialService = {
 
         const rawAccount = (item.conta || item.nome_conta || item.conta_corrente || item.banco || '').toString().trim();
         const accountName = rawAccount.replace(/^[\d.\s-]+/, '').trim();
-        const mapping = CATEGORY_MAPPING[accountName];
+        const mapping = findCategoryMapping(accountName);
 
         if (!mapping || mapping.category === "Á DEFINIR" || mapping.category === "SEM CLASSIFICAÇÃO") return;
 
