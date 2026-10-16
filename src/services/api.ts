@@ -22,6 +22,32 @@ const findCategoryMapping = (accountName: string) => {
   return Object.entries(CATEGORY_MAPPING).find(([label]) => normalizeAccountName(label) === normalized)?.[1];
 };
 
+// DSS "conta" can describe a bank/cash account, not the DRE category.
+// Check known classification fields and only accept an exact mapped label.
+const findItemCategoryMapping = (item: Record<string, any>) => {
+  const fields = [
+    'categoria', 'nomeCategoria', 'nome_categoria', 'classificacao', 'classificação',
+    'planoConta', 'plano_conta', 'nomeConta', 'nome_conta', 'tipoFatura',
+    'tipo_fatura', 'centroCusto', 'centro_custo', 'historico', 'descricao',
+    'conta',
+  ];
+
+  for (const field of fields) {
+    const raw = item[field];
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    const direct = findCategoryMapping(raw);
+    if (direct) return direct;
+
+    const withoutCode = raw.replace(/^\s*[\d.]+\s*[-–:]\s*/, '').trim();
+    if (withoutCode !== raw) {
+      const mapped = findCategoryMapping(withoutCode);
+      if (mapped) return mapped;
+    }
+  }
+
+  return undefined;
+};
+
 // Global request queue with priority support
 type QueueItem = {
   task: () => Promise<any>;
@@ -278,9 +304,7 @@ export const FinancialService = {
       const hasDate = !!(item.dataEmissao || item.data_emissao);
 
       // Category check
-      const rawAccount = (item.conta || item.nome_conta || item.conta_corrente || item.banco || '').toString().trim();
-      const accountName = rawAccount.replace(/^[\d.\s-]+/, '').trim();
-      const mapping = findCategoryMapping(accountName);
+      const mapping = findItemCategoryMapping(item);
       const isExcludedCategory = mapping && (mapping.category === "Á DEFINIR" || mapping.category === "SEM CLASSIFICAÇÃO");
 
       return !isTransfer && hasPartner && !isIdeallog && hasDate && !isExcludedCategory;
@@ -503,9 +527,7 @@ export const FinancialService = {
           if (!selectedCompanies.includes(targetCompanyId)) return;
         }
 
-        const rawAccount = (item.conta || item.nome_conta || item.conta_corrente || item.banco || '').toString().trim();
-        const accountName = rawAccount.replace(/^[\d.\s-]+/, '').trim();
-        const mapping = findCategoryMapping(accountName);
+        const mapping = findItemCategoryMapping(item);
 
         if (!mapping || mapping.category === "Á DEFINIR" || mapping.category === "SEM CLASSIFICAÇÃO") return;
 
