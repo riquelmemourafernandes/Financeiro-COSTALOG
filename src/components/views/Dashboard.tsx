@@ -196,7 +196,7 @@ export const DashboardView = ({ period, selectedCompanies }: { period: { month: 
 
   useEffect(() => {
     fetchData();
-  }, [period]);
+  }, [period, selectedCompanies]);
 
   if (loading) {
     return (
