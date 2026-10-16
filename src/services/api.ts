@@ -6,13 +6,7 @@
  * specific methods for fetching financial data.
  */
 
-// Use environment variables for API configuration
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://costalog.dssinformatica.com.br:5000/wsdss/').trim();
-const API_USER = (import.meta.env.VITE_API_USER || 'wsdss_costalog').trim();
-// Use the literal password to avoid encoding issues
-const API_PASS = (import.meta.env.VITE_API_PASS || '*iJJ%254_mJ%23').trim();
-const API_DB = (import.meta.env.VITE_API_DB || 'bd_costalog').trim();
-
+// DSS credentials stay on the backend. VITE_* variables are public in browser bundles.
 import { CATEGORY_MAPPING } from '../constants/categories';
 
 // Global request queue with priority support
@@ -137,72 +131,30 @@ function getPeriodRange(month: number, year: number) {
 // Base fetcher for the specific API structure via backend proxy
 async function fetchDss(endpoint: string, params: Record<string, string> = {}, priority = false) {
   return addToQueue(async () => {
-    // We want the base to be strictly the root path
-    let baseUrl = API_BASE_URL.split('?')[0];
-    
-    if (baseUrl.includes('costalog.dssinformatica.com.br')) {
-      baseUrl = 'http://costalog.dssinformatica.com.br:5000/wsdss/';
+    const endpointMap: Record<string, string> = {
+      listar_contas_receber_get: 'listarContasReceber',
+      listar_contas_pagar_get: 'listarContasPagar',
+      listarContasReceber: 'listarContasReceber',
+      listarContasPagar: 'listarContasPagar',
+    };
+    const officialEndpoint = endpointMap[endpoint];
+    if (!officialEndpoint) throw new Error('Endpoint DSS não permitido.');
+
+    const query = new URLSearchParams(params);
+    const cacheKey = `${officialEndpoint}?${query.toString()}`;
+    if (rawCache[cacheKey]) return rawCache[cacheKey];
+
+    const response = await fetch('/api/financeiro/dss', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: officialEndpoint, params }),
+    });
+    const data = await handleResponse(response);
+    if (data && typeof data.mensagemErro === 'string' && data.mensagemErro.trim()) {
+      throw new Error(`DSS: ${data.mensagemErro}`);
     }
-    
-    baseUrl = baseUrl.replace(/\/+$/, '') + '/';
-
-    const decodedPass = API_PASS.includes('%') ? decodeURIComponent(API_PASS) : API_PASS;
-    
-    const searchParams = new URLSearchParams();
-    searchParams.append('nome_banco_dados', API_DB);
-    searchParams.append('banco', API_DB);
-    searchParams.append('usuario', API_USER);
-    searchParams.append('senha', decodedPass);
-
-    for (const [key, value] of Object.entries(params)) {
-      searchParams.append(key, value);
-    }
-
-    const queryStr = searchParams.toString().replace(/%2F/g, '/');
-    const targetUrl = `${baseUrl}${endpoint}?${queryStr}`;
-    
-    // Check raw cache first
-    if (rawCache[targetUrl]) {
-      console.log(`FinancialService: Retornando dados do cache bruto para: ${endpoint}`);
-      return rawCache[targetUrl];
-    }
-
-    console.log(`FinancialService: [${priority ? 'PRIORITY' : 'QUEUE'}] Chamando URL: ${targetUrl.replace(/senha=[^&]+/, 'senha=***')}`);
-    
-    try {
-      const response = await fetch('/api/proxy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: targetUrl })
-      });
-      
-      const data = await handleResponse(response);
-      rawCache[targetUrl] = data;
-      return data;
-    } catch (error: any) {
-      if (error.message.includes('500') || error.message.includes('Internal Server Error')) {
-        console.warn('FinancialService: Detectado erro 500, tentando fallback sem nome_banco_dados...');
-        
-        const fallbackParams = new URLSearchParams(searchParams);
-        fallbackParams.delete('nome_banco_dados');
-        const fallbackUrl = `${baseUrl}${endpoint}?${fallbackParams.toString().replace(/%2F/g, '/')}`;
-        
-        // Check fallback in cache too
-        if (rawCache[fallbackUrl]) return rawCache[fallbackUrl];
-
-        const retryResponse = await fetch('/api/proxy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: fallbackUrl })
-        });
-        
-        const retryData = await handleResponse(retryResponse);
-        rawCache[fallbackUrl] = retryData;
-        return retryData;
-      }
-      
-      throw error;
-    }
+    rawCache[cacheKey] = data;
+    return data;
   }, priority);
 }
 
@@ -243,7 +195,7 @@ export const FinancialService = {
   async getReceivablesSummary(period?: { month: number, year: number }) {
     const range = period ? getPeriodRange(period.month, period.year) : this.getCurrentMonthRange();
     const data = await fetchDss('listar_contas_receber_get', { 
-      data_inicio: range.start, data_fim: range.end 
+      data_inicio: range.start, data_fim: range.end, tipo_ref: 'E'
     });
     return this.sumValues(data);
   },
@@ -254,7 +206,7 @@ export const FinancialService = {
   async getPayablesSummary(period?: { month: number, year: number }) {
     const range = period ? getPeriodRange(period.month, period.year) : this.getCurrentMonthRange();
     const data = await fetchDss('listar_contas_pagar_get', { 
-      data_inicio: range.start, data_fim: range.end 
+      data_inicio: range.start, data_fim: range.end, tipo_ref: 'E'
     });
     return this.sumValues(data);
   },
@@ -386,7 +338,7 @@ export const FinancialService = {
         }
       }
       
-      return acc + Math.abs(parseValue(val ?? 0));
+      return acc + parseValue(val ?? 0);
     }, 0);
   },
 
@@ -497,7 +449,7 @@ export const FinancialService = {
           }
         }
       }
-      return Math.abs(parseValue(val ?? 0));
+      return parseValue(val ?? 0);
     };
 
     const dre: Record<string, { label: string, value: number, subcategories: Record<string, number> }> = {};
@@ -635,7 +587,7 @@ export const FinancialService = {
    */
   async getReceivables(start: string, end: string, priority = false) {
     return fetchDss('listar_contas_receber_get', { 
-      data_inicio: start, data_fim: end 
+      data_inicio: start, data_fim: end, tipo_ref: 'E'
     }, priority);
   },
 
@@ -644,7 +596,7 @@ export const FinancialService = {
    */
   async getPayables(start: string, end: string, priority = false) {
     return fetchDss('listar_contas_pagar_get', { 
-      data_inicio: start, data_fim: end 
+      data_inicio: start, data_fim: end, tipo_ref: 'E'
     }, priority);
   }
 };
