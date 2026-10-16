@@ -17,32 +17,46 @@ const normalizeAccountName = (value: string) => value
   .trim()
   .toUpperCase();
 
-const CUSTOM_CATEGORY_STORAGE_KEY = 'costalog_custom_category_mapping';
-
 export type CategoryMapping = { subcategory: string; category: string };
 
-export const getCustomCategoryMappings = (): Record<string, CategoryMapping> => {
-  try {
-    const stored = localStorage.getItem(CUSTOM_CATEGORY_STORAGE_KEY);
-    return stored ? JSON.parse(stored) : {};
-  } catch {
-    return {};
-  }
-};
+let customCategoryMappings: Record<string, CategoryMapping> = {};
+let customMappingsLoaded = false;
 
-export const saveCustomCategoryMapping = (label: string, mapping: CategoryMapping) => {
-  const current = getCustomCategoryMappings();
-  current[label] = mapping;
-  localStorage.setItem(CUSTOM_CATEGORY_STORAGE_KEY, JSON.stringify(current));
-  // Clear computed caches so the new classification takes effect immediately.
+const clearDreCaches = () => {
   Object.keys(sessionCache).forEach(key => delete sessionCache[key]);
   Object.keys(historicalCache).forEach(key => delete historicalCache[key]);
   try { localStorage.removeItem('financial_historical_cache'); } catch { /* storage may be unavailable */ }
 };
 
+export const getCustomCategoryMappings = (): Record<string, CategoryMapping> => customCategoryMappings;
+
+export const loadCustomCategoryMappings = async (force = false): Promise<Record<string, CategoryMapping>> => {
+  if (customMappingsLoaded && !force) return customCategoryMappings;
+  const response = await fetch('/api/financeiro/classificacoes', { credentials: 'same-origin' });
+  const data = await handleResponse(response);
+  customCategoryMappings = data.mappings && typeof data.mappings === 'object' ? data.mappings : {};
+  customMappingsLoaded = true;
+  return customCategoryMappings;
+};
+
+export const saveCustomCategoryMapping = async (label: string, mapping: CategoryMapping) => {
+  const response = await fetch('/api/financeiro/classificacoes', {
+    method: 'PUT',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label, category: mapping.category, subcategory: mapping.subcategory }),
+  });
+  await handleResponse(response);
+  const existingKey = Object.keys(customCategoryMappings).find(key => normalizeAccountName(key) === normalizeAccountName(label));
+  if (existingKey && existingKey !== label) delete customCategoryMappings[existingKey];
+  customCategoryMappings[label] = mapping;
+  customMappingsLoaded = true;
+  clearDreCaches();
+};
+
 const findCategoryMapping = (accountName: string) => {
   const normalized = normalizeAccountName(accountName);
-  const custom = Object.entries(getCustomCategoryMappings()).find(([label]) => normalizeAccountName(label) === normalized)?.[1];
+  const custom = Object.entries(customCategoryMappings).find(([label]) => normalizeAccountName(label) === normalized)?.[1];
   if (custom) return custom;
   return Object.entries(CATEGORY_MAPPING).find(([label]) => normalizeAccountName(label) === normalized)?.[1];
 };
