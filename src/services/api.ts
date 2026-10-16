@@ -411,8 +411,8 @@ export const FinancialService = {
     const range = getPeriodRange(period.month, period.year);
     
     const [receivablesData, payablesData] = await Promise.all([
-      fetchDss('listar_contas_receber_get', { data_inicio: range.start, data_fim: range.end }, priority),
-      fetchDss('listar_contas_pagar_get', { data_inicio: range.start, data_fim: range.end }, priority)
+      fetchDss('listar_contas_receber_get', { data_inicio: range.start, data_fim: range.end, tipo_ref: 'E' }, priority),
+      fetchDss('listar_contas_pagar_get', { data_inicio: range.start, data_fim: range.end, tipo_ref: 'E' }, priority)
     ]);
 
     const normalize = (data: any) => {
