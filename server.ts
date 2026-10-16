@@ -1,5 +1,5 @@
 import express from "express";
-import { timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { createServer as createViteServer } from "vite";
 import fetch from "node-fetch";
 
@@ -9,13 +9,24 @@ const DSS_ENDPOINTS: Record<string, string> = {
 };
 const ALLOWED_REFERENCES = new Set(["E", "V", "P"]);
 
+function accessToken(password: string): string {
+  return createHmac("sha256", password).update("finance-costalog-session-v1").digest("hex");
+}
+
+function safeEqual(left: string, right: string): boolean {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 function hasValidFinancePassword(req: express.Request): boolean {
   const expected = process.env.FINANCE_ACCESS_PASSWORD;
+  if (!expected) return false;
   const supplied = req.header("x-finance-password") || "";
-  if (!expected || !supplied) return false;
-  const expectedBuffer = Buffer.from(expected);
-  const suppliedBuffer = Buffer.from(supplied);
-  return expectedBuffer.length === suppliedBuffer.length && timingSafeEqual(expectedBuffer, suppliedBuffer);
+  if (supplied && safeEqual(supplied, expected)) return true;
+  const cookie = (req.headers.cookie || "").split(";").map(part => part.trim()).find(part => part.startsWith("finance_access="));
+  const token = cookie?.slice("finance_access=".length) || "";
+  return !!token && safeEqual(token, accessToken(expected));
 }
 
 async function startServer() {
@@ -29,9 +40,13 @@ async function startServer() {
     if (!process.env.FINANCE_ACCESS_PASSWORD) {
       return res.status(503).json({ error: "A senha de acesso financeiro não está configurada no servidor." });
     }
-    if (!hasValidFinancePassword(req)) {
+    const expected = process.env.FINANCE_ACCESS_PASSWORD;
+    const supplied = req.header("x-finance-password") || "";
+    if (!expected || !supplied || !safeEqual(supplied, expected)) {
       return res.status(401).json({ error: "Acesso não autorizado." });
     }
+    const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+    res.setHeader("Set-Cookie", `finance_access=${accessToken(expected)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${secure}`);
     return res.json({ authenticated: true });
   });
 
