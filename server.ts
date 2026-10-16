@@ -69,6 +69,12 @@ async function startServer() {
     return res.json({ authenticated: true });
   });
 
+  app.post("/api/financeiro/logout", (_req, res) => {
+    const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+    res.setHeader("Set-Cookie", `finance_access=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure}`);
+    return res.json({ authenticated: false });
+  });
+
   app.post("/api/financeiro/auth", (req, res) => {
     if (!process.env.FINANCE_ACCESS_PASSWORD) {
       return res.status(503).json({ error: "A senha de acesso financeiro não está configurada no servidor." });
