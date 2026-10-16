@@ -231,6 +231,12 @@ export const CATEGORY_MAPPING: Record<string, CategoryInfo> = {
   "ANTECIPAÇÃO DE DISTRIBUIÇÃO DE LUCROS": { subcategory: "7.1.1 - RESERVA", category: "7.1 - RESERVA" },
   "SOCIO 1": { subcategory: "7.1.1 - RESERVA", category: "7.1 - RESERVA" },
 
+  "ASSISTÊNCIA FUNERÁRIA": { subcategory: "2.3.3 - BENEFICIOS", category: "2.3 - FOLHA DE PAGAMENTO" },
+  "PNEUS RECAPADOS": { subcategory: "2.4.1 - SERVIÇOS", category: "2.4 - MANUTENÇÃO" },
+  "PROPAGANDA E PUBLICIDADE": { subcategory: "2.2.1 - DESPESA ADMINISTRATIVA", category: "2.2 - DESPESA ADMINISTRATIVA" },
+  "AVARIA EM TERCEIROS": { subcategory: "2.1.7 - CUSTOS DIVERSOS", category: "2.1 - CUSTOS OPERACIONAIS" },
+  "CONSULTORIA": { subcategory: "2.2.1 - DESPESA ADMINISTRATIVA", category: "2.2 - DESPESA ADMINISTRATIVA" },
+
   // EXCLUSIONS (Á DEFINIR / SEM CLASSIFICAÇÃO)
   "DESPESAS C/ REFEIÇÕES E LANCHES - ADMINISTRATIVOS": { subcategory: "Á DEFINIR", category: "Á DEFINIR" },
   "OBRAS E INSTALAÇÕES EM ANDAMENTO": { subcategory: "Á DEFINIR", category: "Á DEFINIR" },

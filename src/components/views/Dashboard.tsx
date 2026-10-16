@@ -81,7 +81,7 @@ export const DashboardView = ({ period, selectedCompanies }: { period: { month: 
 
   useEffect(() => {
     // Pre-load historical data in the background
-    FinancialService.preLoadHistoricalData(selectedCompanies);
+    FinancialService.preLoadHistoricalData(period, selectedCompanies);
   }, [period, selectedCompanies]);
 
   const fetchData = async () => {
@@ -196,7 +196,7 @@ export const DashboardView = ({ period, selectedCompanies }: { period: { month: 
 
   useEffect(() => {
     fetchData();
-  }, [period]);
+  }, [period, selectedCompanies]);
 
   if (loading) {
     return (

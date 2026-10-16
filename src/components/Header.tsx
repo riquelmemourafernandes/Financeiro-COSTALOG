@@ -51,7 +51,7 @@ export const Header = ({
 
   const handleRefreshHistorical = async () => {
     setIsRefreshing(true);
-    await FinancialService.preLoadHistoricalData(selectedCompanies);
+    await FinancialService.preLoadHistoricalData(period, selectedCompanies);
     setIsRefreshing(false);
     window.location.reload();
   };

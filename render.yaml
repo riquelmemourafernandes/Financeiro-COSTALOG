@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: financeiro-costalog
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DSS_BASE_URL
+        value: https://costalog.dssinformatica.com.br/wsdss/
+      - key: DSS_USER
+        sync: false
+      - key: DSS_PASSWORD
+        sync: false
+      - key: DSS_DATABASE
+        sync: false
+      - key: FINANCE_ACCESS_PASSWORD
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false

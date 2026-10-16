@@ -16,7 +16,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
-import { FinancialService } from '@/src/services/api';
+import { FinancialService, loadCustomCategoryMappings, saveCustomCategoryMapping, type CategoryMapping } from '@/src/services/api';
+import { CATEGORY_MAPPING } from '@/src/constants/categories';
 
 interface DRERowProps {
   label: string;
@@ -91,11 +92,48 @@ export const PAndLView = ({ period, selectedCompanies }: { period: { month: numb
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedMappings, setSelectedMappings] = useState<Record<string, string>>({});
+  const [savingLabel, setSavingLabel] = useState<string | null>(null);
+  const [mappingMessage, setMappingMessage] = useState('');
+
+  const mappingOptions = Array.from(
+    new Map(
+      Object.values(CATEGORY_MAPPING).map((mapping: CategoryMapping) => [
+        `${mapping.category}||${mapping.subcategory}`,
+        mapping
+      ])
+    ).values()
+  ).sort((a, b) => a.category.localeCompare(b.category) || a.subcategory.localeCompare(b.subcategory));
+
+  const applyMapping = async (label: string) => {
+    const selected = selectedMappings[label];
+    if (!selected) return;
+    const [category, subcategory] = selected.split('||');
+    setSavingLabel(label);
+    setMappingMessage('');
+    try {
+      await saveCustomCategoryMapping(label, { category, subcategory });
+      setMappingMessage(`Classificação de "${label}" salva. Atualizando DRE...`);
+      await fetchData();
+      setSelectedMappings(current => {
+        const next = { ...current };
+        delete next[label];
+        return next;
+      });
+      setMappingMessage(`"${label}" classificada com sucesso.`);
+    } catch (e) {
+      setMappingMessage('Não foi possível salvar a classificação neste navegador.');
+    } finally {
+      setSavingLabel(null);
+    }
+  };
 
   const fetchData = async () => {
     try {
       setLoading(true);
       setError(null);
+      // Load permanent user-defined classifications before calculating DRE totals.
+      await loadCustomCategoryMappings(true);
       // 1. Load current period first
       const currentDRE = await FinancialService.getDREData(period, selectedCompanies, false, true);
       
@@ -140,7 +178,7 @@ export const PAndLView = ({ period, selectedCompanies }: { period: { month: numb
 
   useEffect(() => {
     fetchData();
-  }, [period]);
+  }, [period, selectedCompanies]);
 
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
@@ -257,6 +295,73 @@ export const PAndLView = ({ period, selectedCompanies }: { period: { month: numb
           </div>
         </div>
       </div>
+
+      {(data.current.unmappedCategories || []).length > 0 && (
+        <section className="bg-surface rounded-xl border border-amber-500/30 shadow-sm overflow-hidden">
+          <div className="p-5 border-b border-border">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-bold">Classificar lançamentos pendentes</h2>
+                <p className="text-sm text-slate-400 mt-1">
+                  O sistema encontrou categorias ainda não classificadas neste período. Escolha a classificação correta; ela será reutilizada nos próximos meses quando o mesmo nome aparecer.
+                </p>
+              </div>
+              <span className="rounded-full bg-amber-500/10 text-amber-300 px-3 py-1 text-xs font-bold">
+                {(data.current.unmappedCategories || []).reduce((sum: number, item: any) => sum + item.count, 0)} lançamentos
+              </span>
+            </div>
+            {mappingMessage && <p role="status" className="text-sm text-emerald-400 mt-3">{mappingMessage}</p>}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead className="bg-white/5 text-slate-500 text-[10px] uppercase tracking-widest font-bold">
+                <tr>
+                  <th className="px-5 py-3">Categoria do DSS</th>
+                  <th className="px-5 py-3 text-right">Lançamentos</th>
+                  <th className="px-5 py-3">Classificar como</th>
+                  <th className="px-5 py-3 text-right">Ação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(data.current.unmappedCategories || []).map((item: { label: string; count: number }) => (
+                  <tr key={item.label} className="border-t border-border/50">
+                    <td className="px-5 py-3 text-sm font-medium text-slate-200">{item.label}</td>
+                    <td className="px-5 py-3 text-sm text-right text-slate-400">{item.count}</td>
+                    <td className="px-5 py-3 min-w-[320px]">
+                      <select
+                        value={selectedMappings[item.label] || ''}
+                        onChange={event => setSelectedMappings(current => ({ ...current, [item.label]: event.target.value }))}
+                        className="w-full rounded-lg border border-border bg-slate-900 px-3 py-2 text-sm text-slate-100"
+                        aria-label={`Classificação para ${item.label}`}
+                      >
+                        <option value="">Selecione categoria e subcategoria...</option>
+                        {mappingOptions.map(option => (
+                          <option key={`${option.category}||${option.subcategory}`} value={`${option.category}||${option.subcategory}`}>
+                            {option.category} — {option.subcategory}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="px-5 py-3 text-right">
+                      <button
+                        type="button"
+                        disabled={!selectedMappings[item.label] || savingLabel !== null}
+                        onClick={() => applyMapping(item.label)}
+                        className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-white disabled:opacity-40"
+                      >
+                        {savingLabel === item.label ? 'Salvando...' : 'Salvar'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="px-5 py-3 text-xs text-slate-500">
+            As classificações ficam salvas neste navegador e são aplicadas ao DRE após atualizar. Para compartilhar entre computadores e usuários, será necessário configurar um armazenamento compartilhado no servidor.
+          </p>
+        </section>
+      )}
 
       <div className="bg-surface rounded-xl border border-border shadow-sm overflow-hidden">
         <div className="overflow-x-auto">

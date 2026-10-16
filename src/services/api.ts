@@ -6,14 +6,86 @@
  * specific methods for fetching financial data.
  */
 
-// Use environment variables for API configuration
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://costalog.dssinformatica.com.br:5000/wsdss/').trim();
-const API_USER = (import.meta.env.VITE_API_USER || 'wsdss_costalog').trim();
-// Use the literal password to avoid encoding issues
-const API_PASS = (import.meta.env.VITE_API_PASS || '*iJJ%254_mJ%23').trim();
-const API_DB = (import.meta.env.VITE_API_DB || 'bd_costalog').trim();
-
+// DSS credentials stay on the backend. VITE_* variables are public in browser bundles.
 import { CATEGORY_MAPPING } from '../constants/categories';
+
+// Match account labels consistently despite capitalization, accents, or repeated spaces.
+const normalizeAccountName = (value: string) => value
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .toUpperCase();
+
+export type CategoryMapping = { subcategory: string; category: string };
+
+let customCategoryMappings: Record<string, CategoryMapping> = {};
+let customMappingsLoaded = false;
+
+const clearDreCaches = () => {
+  Object.keys(sessionCache).forEach(key => delete sessionCache[key]);
+  Object.keys(historicalCache).forEach(key => delete historicalCache[key]);
+  try { localStorage.removeItem('financial_historical_cache'); } catch { /* storage may be unavailable */ }
+};
+
+export const getCustomCategoryMappings = (): Record<string, CategoryMapping> => customCategoryMappings;
+
+export const loadCustomCategoryMappings = async (force = false): Promise<Record<string, CategoryMapping>> => {
+  if (customMappingsLoaded && !force) return customCategoryMappings;
+  const response = await fetch('/api/financeiro/classificacoes', { credentials: 'same-origin' });
+  const data = await handleResponse(response);
+  customCategoryMappings = data.mappings && typeof data.mappings === 'object' ? data.mappings : {};
+  customMappingsLoaded = true;
+  return customCategoryMappings;
+};
+
+export const saveCustomCategoryMapping = async (label: string, mapping: CategoryMapping) => {
+  const response = await fetch('/api/financeiro/classificacoes', {
+    method: 'PUT',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label, category: mapping.category, subcategory: mapping.subcategory }),
+  });
+  await handleResponse(response);
+  const existingKey = Object.keys(customCategoryMappings).find(key => normalizeAccountName(key) === normalizeAccountName(label));
+  if (existingKey && existingKey !== label) delete customCategoryMappings[existingKey];
+  customCategoryMappings[label] = mapping;
+  customMappingsLoaded = true;
+  clearDreCaches();
+};
+
+const findCategoryMapping = (accountName: string) => {
+  const normalized = normalizeAccountName(accountName);
+  const custom = Object.entries(customCategoryMappings).find(([label]) => normalizeAccountName(label) === normalized)?.[1];
+  if (custom) return custom;
+  return Object.entries(CATEGORY_MAPPING).find(([label]) => normalizeAccountName(label) === normalized)?.[1];
+};
+
+// DSS "conta" can describe a bank/cash account, not the DRE category.
+// Check known classification fields and only accept an exact mapped label.
+const findItemCategoryMapping = (item: Record<string, any>) => {
+  const fields = [
+    'categoria', 'nomeCategoria', 'nome_categoria', 'classificacao', 'classificação',
+    'planoConta', 'plano_conta', 'nomeConta', 'nome_conta', 'tipoFatura',
+    'tipo_fatura', 'centroCusto', 'centro_custo', 'historico', 'descricao',
+    'conta',
+  ];
+
+  for (const field of fields) {
+    const raw = item[field];
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    const direct = findCategoryMapping(raw);
+    if (direct) return direct;
+
+    const withoutCode = raw.replace(/^\s*[\d.]+\s*[-–:]\s*/, '').trim();
+    if (withoutCode !== raw) {
+      const mapped = findCategoryMapping(withoutCode);
+      if (mapped) return mapped;
+    }
+  }
+
+  return undefined;
+};
 
 // Global request queue with priority support
 type QueueItem = {
@@ -137,72 +209,30 @@ function getPeriodRange(month: number, year: number) {
 // Base fetcher for the specific API structure via backend proxy
 async function fetchDss(endpoint: string, params: Record<string, string> = {}, priority = false) {
   return addToQueue(async () => {
-    // We want the base to be strictly the root path
-    let baseUrl = API_BASE_URL.split('?')[0];
-    
-    if (baseUrl.includes('costalog.dssinformatica.com.br')) {
-      baseUrl = 'http://costalog.dssinformatica.com.br:5000/wsdss/';
+    const endpointMap: Record<string, string> = {
+      listar_contas_receber_get: 'listarContasReceber',
+      listar_contas_pagar_get: 'listarContasPagar',
+      listarContasReceber: 'listarContasReceber',
+      listarContasPagar: 'listarContasPagar',
+    };
+    const officialEndpoint = endpointMap[endpoint];
+    if (!officialEndpoint) throw new Error('Endpoint DSS não permitido.');
+
+    const query = new URLSearchParams(params);
+    const cacheKey = `${officialEndpoint}?${query.toString()}`;
+    if (rawCache[cacheKey]) return rawCache[cacheKey];
+
+    const response = await fetch('/api/financeiro/dss', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: officialEndpoint, params }),
+    });
+    const data = await handleResponse(response);
+    if (data && typeof data.mensagemErro === 'string' && data.mensagemErro.trim()) {
+      throw new Error(`DSS: ${data.mensagemErro}`);
     }
-    
-    baseUrl = baseUrl.replace(/\/+$/, '') + '/';
-
-    const decodedPass = API_PASS.includes('%') ? decodeURIComponent(API_PASS) : API_PASS;
-    
-    const searchParams = new URLSearchParams();
-    searchParams.append('nome_banco_dados', API_DB);
-    searchParams.append('banco', API_DB);
-    searchParams.append('usuario', API_USER);
-    searchParams.append('senha', decodedPass);
-
-    for (const [key, value] of Object.entries(params)) {
-      searchParams.append(key, value);
-    }
-
-    const queryStr = searchParams.toString().replace(/%2F/g, '/');
-    const targetUrl = `${baseUrl}${endpoint}?${queryStr}`;
-    
-    // Check raw cache first
-    if (rawCache[targetUrl]) {
-      console.log(`FinancialService: Retornando dados do cache bruto para: ${endpoint}`);
-      return rawCache[targetUrl];
-    }
-
-    console.log(`FinancialService: [${priority ? 'PRIORITY' : 'QUEUE'}] Chamando URL: ${targetUrl.replace(/senha=[^&]+/, 'senha=***')}`);
-    
-    try {
-      const response = await fetch('/api/proxy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: targetUrl })
-      });
-      
-      const data = await handleResponse(response);
-      rawCache[targetUrl] = data;
-      return data;
-    } catch (error: any) {
-      if (error.message.includes('500') || error.message.includes('Internal Server Error')) {
-        console.warn('FinancialService: Detectado erro 500, tentando fallback sem nome_banco_dados...');
-        
-        const fallbackParams = new URLSearchParams(searchParams);
-        fallbackParams.delete('nome_banco_dados');
-        const fallbackUrl = `${baseUrl}${endpoint}?${fallbackParams.toString().replace(/%2F/g, '/')}`;
-        
-        // Check fallback in cache too
-        if (rawCache[fallbackUrl]) return rawCache[fallbackUrl];
-
-        const retryResponse = await fetch('/api/proxy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: fallbackUrl })
-        });
-        
-        const retryData = await handleResponse(retryResponse);
-        rawCache[fallbackUrl] = retryData;
-        return retryData;
-      }
-      
-      throw error;
-    }
+    rawCache[cacheKey] = data;
+    return data;
   }, priority);
 }
 
@@ -243,7 +273,7 @@ export const FinancialService = {
   async getReceivablesSummary(period?: { month: number, year: number }) {
     const range = period ? getPeriodRange(period.month, period.year) : this.getCurrentMonthRange();
     const data = await fetchDss('listar_contas_receber_get', { 
-      data_inicio: range.start, data_fim: range.end 
+      data_inicio: range.start, data_fim: range.end, tipo_ref: 'E'
     });
     return this.sumValues(data);
   },
@@ -254,7 +284,7 @@ export const FinancialService = {
   async getPayablesSummary(period?: { month: number, year: number }) {
     const range = period ? getPeriodRange(period.month, period.year) : this.getCurrentMonthRange();
     const data = await fetchDss('listar_contas_pagar_get', { 
-      data_inicio: range.start, data_fim: range.end 
+      data_inicio: range.start, data_fim: range.end, tipo_ref: 'E'
     });
     return this.sumValues(data);
   },
@@ -313,9 +343,7 @@ export const FinancialService = {
       const hasDate = !!(item.dataEmissao || item.data_emissao);
 
       // Category check
-      const rawAccount = (item.conta || item.nome_conta || item.conta_corrente || item.banco || '').toString().trim();
-      const accountName = rawAccount.replace(/^[\d.\s-]+/, '').trim();
-      const mapping = CATEGORY_MAPPING[accountName];
+      const mapping = findItemCategoryMapping(item);
       const isExcludedCategory = mapping && (mapping.category === "Á DEFINIR" || mapping.category === "SEM CLASSIFICAÇÃO");
 
       return !isTransfer && hasPartner && !isIdeallog && hasDate && !isExcludedCategory;
@@ -386,7 +414,7 @@ export const FinancialService = {
         }
       }
       
-      return acc + Math.abs(parseValue(val ?? 0));
+      return acc + parseValue(val ?? 0);
     }, 0);
   },
 
@@ -459,8 +487,8 @@ export const FinancialService = {
     const range = getPeriodRange(period.month, period.year);
     
     const [receivablesData, payablesData] = await Promise.all([
-      fetchDss('listar_contas_receber_get', { data_inicio: range.start, data_fim: range.end }, priority),
-      fetchDss('listar_contas_pagar_get', { data_inicio: range.start, data_fim: range.end }, priority)
+      fetchDss('listar_contas_receber_get', { data_inicio: range.start, data_fim: range.end, tipo_ref: 'E' }, priority),
+      fetchDss('listar_contas_pagar_get', { data_inicio: range.start, data_fim: range.end, tipo_ref: 'E' }, priority)
     ]);
 
     const normalize = (data: any) => {
@@ -497,7 +525,7 @@ export const FinancialService = {
           }
         }
       }
-      return Math.abs(parseValue(val ?? 0));
+      return parseValue(val ?? 0);
     };
 
     const dre: Record<string, { label: string, value: number, subcategories: Record<string, number> }> = {};
@@ -509,6 +537,7 @@ export const FinancialService = {
     };
 
     const foundCompanies = new Set<string>();
+    const unmappedCategoryCounts = new Map<string, number>();
 
     const processItems = (items: any[], isRevenue: boolean) => {
       if (items.length === 0) {
@@ -538,11 +567,22 @@ export const FinancialService = {
           if (!selectedCompanies.includes(targetCompanyId)) return;
         }
 
-        const rawAccount = (item.conta || item.nome_conta || item.conta_corrente || item.banco || '').toString().trim();
-        const accountName = rawAccount.replace(/^[\d.\s-]+/, '').trim();
-        const mapping = CATEGORY_MAPPING[accountName];
+        const mapping = findItemCategoryMapping(item);
 
-        if (!mapping || mapping.category === "Á DEFINIR" || mapping.category === "SEM CLASSIFICAÇÃO") return;
+        if (!mapping) {
+          // Log only possible classification labels (not partner names or amounts) to help
+          // align the DSS schema with the DRE mapping without exposing financial details.
+          const candidates = [
+            item.categoria, item.nomeCategoria, item.nome_categoria, item.classificacao,
+            item.classificação, item.planoConta, item.plano_conta, item.nomeConta,
+            item.nome_conta, item.tipoFatura, item.tipo_fatura, item.centroCusto,
+            item.centro_custo, item.conta,
+          ];
+          const label = candidates.find(value => typeof value === 'string' && value.trim())?.toString().trim() || '(sem campo de classificação reconhecido)';
+          unmappedCategoryCounts.set(label, (unmappedCategoryCounts.get(label) || 0) + 1);
+          return;
+        }
+        if (mapping.category === "Á DEFINIR" || mapping.category === "SEM CLASSIFICAÇÃO") return;
 
         const { category, subcategory } = mapping;
         const value = getValue(item);
@@ -577,6 +617,12 @@ export const FinancialService = {
     if (foundCompanies.size > 0) {
       console.log(`FinancialService: Empresas encontradas em ${period.month}/${period.year}:`, Array.from(foundCompanies));
     }
+    if (unmappedCategoryCounts.size > 0) {
+      console.warn(
+        `FinancialService: ${Array.from(unmappedCategoryCounts.values()).reduce((sum, count) => sum + count, 0)} lançamentos sem categoria mapeada em ${period.month}/${period.year}. Principais campos:`,
+        Array.from(unmappedCategoryCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10)
+      );
+    }
 
     // Calculate totals
     let totalRevenue = 0;
@@ -596,7 +642,10 @@ export const FinancialService = {
       totalRevenue,
       totalExpense,
       netResult: totalRevenue - totalExpense,
-      companyBreakdown
+      companyBreakdown,
+      unmappedCategories: Array.from(unmappedCategoryCounts.entries())
+        .map(([label, count]) => ({ label, count }))
+        .sort((a, b) => b.count - a.count)
     };
 
     // Store in session cache
@@ -635,7 +684,7 @@ export const FinancialService = {
    */
   async getReceivables(start: string, end: string, priority = false) {
     return fetchDss('listar_contas_receber_get', { 
-      data_inicio: start, data_fim: end 
+      data_inicio: start, data_fim: end, tipo_ref: 'E'
     }, priority);
   },
 
@@ -644,7 +693,7 @@ export const FinancialService = {
    */
   async getPayables(start: string, end: string, priority = false) {
     return fetchDss('listar_contas_pagar_get', { 
-      data_inicio: start, data_fim: end 
+      data_inicio: start, data_fim: end, tipo_ref: 'E'
     }, priority);
   }
 };
