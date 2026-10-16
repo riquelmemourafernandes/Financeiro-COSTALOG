@@ -12,8 +12,8 @@ import { CATEGORY_MAPPING } from '../constants/categories';
 // Match account labels consistently despite capitalization, accents, or repeated spaces.
 const normalizeAccountName = (value: string) => value
   .normalize('NFD')
-  .replace(/[\\u0300-\\u036f]/g, '')
-  .replace(/\\s+/g, ' ')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/\s+/g, ' ')
   .trim()
   .toUpperCase();
 
