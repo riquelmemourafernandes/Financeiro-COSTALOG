@@ -2,6 +2,9 @@ import express from "express";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createServer as createViteServer } from "vite";
 import fetch from "node-fetch";
+import Database from "better-sqlite3";
+import fs from "node:fs";
+import path from "node:path";
 
 const DSS_ENDPOINTS: Record<string, string> = {
   listarContasReceber: "listarContasReceber",
@@ -58,6 +61,34 @@ async function startServer() {
   app.set("trust proxy", 1);
   app.use(express.json({ limit: "32kb" }));
 
+  // User-defined DRE classifications are stored in SQLite. On Render, set
+  // CLASSIFICATION_DB_PATH to a mounted persistent-disk path (for example /var/data/classifications.sqlite).
+  const classificationDbPath = process.env.CLASSIFICATION_DB_PATH || "./data/classifications.sqlite";
+  fs.mkdirSync(path.dirname(path.resolve(classificationDbPath)), { recursive: true });
+  const classificationDb = new Database(classificationDbPath);
+  classificationDb.pragma("journal_mode = WAL");
+  classificationDb.exec(`
+    CREATE TABLE IF NOT EXISTS dre_classifications (
+      label_key TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      category TEXT NOT NULL,
+      subcategory TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  const listClassifications = classificationDb.prepare(
+    "SELECT label, category, subcategory FROM dre_classifications ORDER BY label COLLATE NOCASE"
+  );
+  const saveClassification = classificationDb.prepare(`
+    INSERT INTO dre_classifications (label_key, label, category, subcategory, updated_at)
+    VALUES (@label_key, @label, @category, @subcategory, CURRENT_TIMESTAMP)
+    ON CONFLICT(label_key) DO UPDATE SET
+      label = excluded.label,
+      category = excluded.category,
+      subcategory = excluded.subcategory,
+      updated_at = CURRENT_TIMESTAMP
+  `);
+
   app.get("/api/health", (_req, res) => {
     return res.json({ status: "ok", service: "financeiro-costalog" });
   });
@@ -103,6 +134,35 @@ async function startServer() {
     const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
     res.setHeader("Set-Cookie", `finance_access=${accessToken(expected)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${secure}`);
     return res.json({ authenticated: true });
+  });
+
+  app.get("/api/financeiro/classificacoes", (req, res) => {
+    if (!hasValidFinancePassword(req)) {
+      return res.status(process.env.FINANCE_ACCESS_PASSWORD ? 401 : 503).json({ error: "Acesso não autorizado." });
+    }
+    const mappings: Record<string, { category: string; subcategory: string }> = {};
+    for (const row of listClassifications.all() as Array<{label:string;category:string;subcategory:string}>) {
+      mappings[row.label] = { category: row.category, subcategory: row.subcategory };
+    }
+    return res.json({ mappings });
+  });
+
+  app.put("/api/financeiro/classificacoes", (req, res) => {
+    if (!hasValidFinancePassword(req)) {
+      return res.status(process.env.FINANCE_ACCESS_PASSWORD ? 401 : 503).json({ error: "Acesso não autorizado." });
+    }
+    const { label, category, subcategory } = req.body ?? {};
+    if ([label, category, subcategory].some(value => typeof value !== "string" || !value.trim() || value.length > 200)) {
+      return res.status(400).json({ error: "Informe categoria original, categoria DRE e subcategoria válidas." });
+    }
+    const normalizedLabel = label.normalize("NFD").replace(/[\\u0300-\\u036f]/g, "").replace(/\\s+/g, " ").trim().toUpperCase();
+    saveClassification.run({
+      label_key: normalizedLabel,
+      label: label.trim(),
+      category: category.trim(),
+      subcategory: subcategory.trim()
+    });
+    return res.json({ saved: true, label: label.trim(), category: category.trim(), subcategory: subcategory.trim() });
   });
 
   app.post("/api/financeiro/dss", async (req, res) => {
