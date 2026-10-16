@@ -51,6 +51,8 @@ export default function App() {
   const handleLogout = async () => {
     try {
       await fetch('/api/financeiro/logout', { method: 'POST' });
+    } catch {
+      // Clear the local view even if the server cannot be reached.
     } finally {
       setAuthenticated(false);
       setAccessPassword('');
