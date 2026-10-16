@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
-import { FinancialService, saveCustomCategoryMapping, type CategoryMapping } from '@/src/services/api';
+import { FinancialService, loadCustomCategoryMappings, saveCustomCategoryMapping, type CategoryMapping } from '@/src/services/api';
 import { CATEGORY_MAPPING } from '@/src/constants/categories';
 
 interface DRERowProps {
@@ -112,7 +112,7 @@ export const PAndLView = ({ period, selectedCompanies }: { period: { month: numb
     setSavingLabel(label);
     setMappingMessage('');
     try {
-      saveCustomCategoryMapping(label, { category, subcategory });
+      await saveCustomCategoryMapping(label, { category, subcategory });
       setMappingMessage(`Classificação de "${label}" salva. Atualizando DRE...`);
       await fetchData();
       setSelectedMappings(current => {
@@ -132,6 +132,8 @@ export const PAndLView = ({ period, selectedCompanies }: { period: { month: numb
     try {
       setLoading(true);
       setError(null);
+      // Load permanent user-defined classifications before calculating DRE totals.
+      await loadCustomCategoryMappings(true);
       // 1. Load current period first
       const currentDRE = await FinancialService.getDREData(period, selectedCompanies, false, true);
       
