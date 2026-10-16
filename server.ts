@@ -2,122 +2,87 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import fetch from "node-fetch";
 
+const DSS_ENDPOINTS: Record<string, string> = {
+  listarContasReceber: "listarContasReceber",
+  listarContasPagar: "listarContasPagar",
+};
+const ALLOWED_REFERENCES = new Set(["E", "V", "P"]);
+
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT || 3000);
+  app.use(express.json({ limit: "32kb" }));
 
-  app.use(express.json());
-
-  // Simple in-memory cache
-  const cache = new Map<string, { data: any, timestamp: number }>();
-  const CACHE_TTL = 1000 * 60 * 5; // 5 minutes
-
-  // Proxy route to bypass CORS and Mixed Content (HTTP vs HTTPS)
-  // Supporting both GET and POST for flexibility
-  const proxyHandler = async (req: express.Request, res: express.Response) => {
+  // DSS credentials are server-side only. Never prefix them with VITE_.
+  app.post("/api/financeiro/dss", async (req, res) => {
     try {
-      const url = req.method === 'POST' ? req.body.url : req.query.url;
-      
-      if (!url || typeof url !== 'string') {
-        return res.status(400).json({ error: "URL parameter is required" });
+      const { endpoint, params } = req.body ?? {};
+      const route = typeof endpoint === "string" ? DSS_ENDPOINTS[endpoint] : undefined;
+      if (!route) return res.status(400).json({ error: "Endpoint DSS não permitido." });
+
+      const { DSS_BASE_URL, DSS_USER, DSS_PASSWORD, DSS_DATABASE } = process.env;
+      if (!DSS_BASE_URL || !DSS_USER || !DSS_PASSWORD || !DSS_DATABASE) {
+        return res.status(503).json({ error: "Integração DSS não configurada no backend." });
       }
 
-      // Check cache first
-      const cached = cache.get(url);
-      if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-        console.log(`[PROXY] Cache hit for URL: ${url.replace(/senha=[^&]+/, 'senha=***')}`);
-        return res.json(cached.data);
+      const base = new URL(DSS_BASE_URL);
+      if (base.protocol !== "https:" || !base.hostname.endsWith("dssinformatica.com.br")) {
+        return res.status(500).json({ error: "DSS_BASE_URL deve ser HTTPS e apontar para um domínio DSS autorizado." });
       }
 
-      // Only allow proxying to the specific DSS domain for security
-      if (!url.startsWith("http://costalog.dssinformatica.com.br") && !url.startsWith("https://costalog.dssinformatica.com.br")) {
-        return res.status(403).json({ error: "Domain not allowed" });
+      const input = params && typeof params === "object" ? params : {};
+      const start = typeof input.data_inicio === "string" ? input.data_inicio : "";
+      const end = typeof input.data_fim === "string" ? input.data_fim : "";
+      const reference = typeof input.tipo_ref === "string" ? input.tipo_ref : "E";
+      if (!/^\d{2}\/\d{2}\/\d{4}$/.test(start) || !/^\d{2}\/\d{2}\/\d{4}$/.test(end)) {
+        return res.status(400).json({ error: "Informe data_inicio e data_fim no formato DD/MM/AAAA." });
+      }
+      if (!ALLOWED_REFERENCES.has(reference)) {
+        return res.status(400).json({ error: "tipo_ref deve ser E, V ou P." });
       }
 
-      console.log(`[PROXY] [${req.method}] Received URL: ${url.replace(/senha=[^&]+/, 'senha=***')}`);
-      
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Accept': 'application/json, text/plain, */*',
-          'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache',
-        },
-        timeout: 30000, // 30 seconds timeout
+      const target = new URL(route, base.toString().replace(/\/?$/, "/"));
+      target.searchParams.set("nome_banco_dados", DSS_DATABASE);
+      target.searchParams.set("banco", DSS_DATABASE);
+      target.searchParams.set("usuario", DSS_USER);
+      target.searchParams.set("senha", DSS_PASSWORD);
+      target.searchParams.set("data_inicio", start);
+      target.searchParams.set("data_fim", end);
+      target.searchParams.set("tipo_ref", reference);
+
+      const upstream = await fetch(target.toString(), {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        timeout: 30000,
       } as any);
-      
-      console.log(`[PROXY] Response status: ${response.status} (${response.statusText})`);
-      const contentType = response.headers.get("content-type");
-      
-      if (contentType && contentType.includes("application/json")) {
-        const data = await response.json() as any;
-        
-        // If the API returns a 200 but with an error message inside
-        if (data && data.mensagemErro && data.mensagemErro.trim() !== "") {
-          console.warn(`[PROXY] API returned logic error: ${data.mensagemErro}`);
-        }
-        
-        // Store in cache
-        cache.set(url, { data, timestamp: Date.now() });
-        
-        res.json(data);
-      } else {
-        const text = await response.text();
-        console.warn(`[PROXY] Remote server returned non-JSON (${contentType}):`, text.substring(0, 1000));
-        
-        if (response.status >= 400) {
-          // Try to extract a cleaner error message from the HTML if possible
-          const titleMatch = text.match(/<title>(.*?)<\/title>/i);
-          const h1Match = text.match(/<h1>(.*?)<\/h1>/i);
-          const errorInfo = h1Match ? h1Match[1] : (titleMatch ? titleMatch[1] : "Erro desconhecido");
-          
-          res.status(response.status).json({ 
-            error: "Erro no servidor remoto (DSS)", 
-            status: response.status,
-            statusText: response.statusText,
-            details: errorInfo.replace(/<[^>]*>?/gm, '').trim(),
-            raw: text.substring(0, 200)
-          });
-        } else {
-          // If it's a 200 but not JSON, try to send it as text
-          res.status(response.status).send(text);
-        }
-      }
+      const text = await upstream.text();
+      let data: any;
+      try { data = JSON.parse(text); }
+      catch { return res.status(502).json({ error: "O DSS retornou uma resposta que não é JSON válido." }); }
+
+      if (!upstream.ok) return res.status(502).json({ error: "Erro na consulta ao DSS.", status: upstream.status });
+      if (data?.mensagemErro?.trim()) return res.status(502).json({ error: "O DSS informou um erro na consulta.", details: data.mensagemErro });
+      return res.json(data);
     } catch (error: any) {
-      console.error("Proxy error:", error);
-      res.status(500).json({ error: error.message || "Internal Server Error" });
+      console.error("[DSS] Falha na consulta:", error?.message || "erro desconhecido");
+      return res.status(502).json({ error: "Não foi possível consultar o DSS." });
     }
-  };
-
-  app.get("/api/proxy", proxyHandler);
-  app.post("/api/proxy", proxyHandler);
-
-  app.post("/api/proxy/clear", (req, res) => {
-    cache.clear();
-    console.log("[PROXY] Cache cleared by user");
-    res.json({ status: "ok", message: "Cache cleared" });
   });
 
-  // Vite middleware for development
+  // Legacy proxy removed: clients may not choose arbitrary upstream URLs.
+  app.post("/api/proxy", (_req, res) => res.status(410).json({ error: "Proxy antigo desativado. Use /api/financeiro/dss." }));
+  app.get("/api/proxy", (_req, res) => res.status(410).json({ error: "Proxy antigo desativado. Use /api/financeiro/dss." }));
+  app.post("/api/proxy/clear", (_req, res) => res.json({ status: "ok", message: "Não há cache de proxy para limpar." }));
+
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
   } else {
-    // Serve static files in production
     app.use(express.static("dist"));
-    app.get("*", (req, res) => {
-      res.sendFile("dist/index.html", { root: "." });
-    });
+    app.get("*", (_req, res) => res.sendFile("dist/index.html", { root: "." }));
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));
 }
 
 startServer();
