@@ -9,8 +9,27 @@ const DSS_ENDPOINTS: Record<string, string> = {
 };
 const ALLOWED_REFERENCES = new Set(["E", "V", "P"]);
 
+const SESSION_TTL_SECONDS = 8 * 60 * 60;
+
 function accessToken(password: string): string {
-  return createHmac("sha256", password).update("finance-costalog-session-v1").digest("hex");
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const signature = createHmac("sha256", password)
+    .update(`finance-costalog-session-v1:${issuedAt}`)
+    .digest("hex");
+  return `${issuedAt}.${signature}`;
+}
+
+function isValidAccessToken(token: string, password: string): boolean {
+  const [issuedAtText, signature] = token.split(".");
+  const issuedAt = Number(issuedAtText);
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isInteger(issuedAt) || !signature || issuedAt > now || now - issuedAt > SESSION_TTL_SECONDS) {
+    return false;
+  }
+  const expected = createHmac("sha256", password)
+    .update(`finance-costalog-session-v1:${issuedAt}`)
+    .digest("hex");
+  return safeEqual(signature, expected);
 }
 
 function safeEqual(left: string, right: string): boolean {
@@ -26,7 +45,7 @@ function hasValidFinancePassword(req: express.Request): boolean {
   if (supplied && safeEqual(supplied, expected)) return true;
   const cookie = (req.headers.cookie || "").split(";").map(part => part.trim()).find(part => part.startsWith("finance_access="));
   const token = cookie?.slice("finance_access=".length) || "";
-  return !!token && safeEqual(token, accessToken(expected));
+  return !!token && isValidAccessToken(token, expected);
 }
 
 async function startServer() {
